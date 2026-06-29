@@ -1,9 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import Response 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from models.schemas import UploadResponse, AskRequest, AskResponse, ErrorResponse
 from utils.file import save_uploaded_file, load_file_to_dataframe, validate_file
-from database.db import store_dataframe, get_table_schema, execute_query
+from database.db import store_dataframe, get_table_schema, execute_query, get_sample_data, get_column_stats
 from core.engine import KPIService
 from core.sql import execute_sql_query
 import config
@@ -15,23 +14,25 @@ import io
 from typing import Any
 import numpy as np
 
-# Create separate routers for each section
-upload_router = APIRouter(tags=["File Upload"])
-ask_router = APIRouter(tags=["Ask Question"])
-download_router = APIRouter(tags=["Download Results"])
-info_router = APIRouter(tags=["System Info"])
+# Create separate routers for each section (in order)
+upload_router = APIRouter(tags=["1. File Upload"])
+schema_router = APIRouter(tags=["2. Schema Explorer"])
+ask_router = APIRouter(tags=["3. Ask Question"])
+download_router = APIRouter(tags=["4. Download Results"])
+cache_router = APIRouter(tags=["5. Cache Management"])
+info_router = APIRouter(tags=["6. System Info"])
 
 kpi_service = KPIService()
-LAST_QUERY_RESULT = {"data": [], "columns": []}
 
 # Global variable to store last query results in memory (NOT on disk)
 LAST_QUERY_RESULT = {"data": [], "columns": []}
 
+# Query Cache (in-memory)
+QUERY_CACHE = {}
+CACHE_TTL = 300  # 5 minutes cache
+
 def clean_value(value: Any) -> Any:
-    """
-    Clean values for JSON serialization.
-    Handles: NaN, NaT, Inf, -Inf, None, and other non-serializable types
-    """
+    """Clean values for JSON serialization."""
     if value is None:
         return None
     
@@ -109,17 +110,11 @@ def clean_sql_results_for_json(data: list) -> list:
     return cleaned_data
 
 # ─────────────────────────────────────────────────────────────
-# FILE UPLOAD SECTION
+# 1. FILE UPLOAD SECTION
 # ─────────────────────────────────────────────────────────────
 @upload_router.post("/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
-    """
-    Upload a CSV or Excel file to be analyzed.
-    
-    - **File Types**: CSV, XLSX, XLS
-    - **Max Size**: 50 MB
-    - **Storage**: SQLite database (uploaded_data table)
-    """
+    """Upload a CSV or Excel file to be analyzed."""
     print(f"\n{'='*60}")
     print("[UPLOAD] File received")
     print(f"{'='*60}")
@@ -162,22 +157,69 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────
-# ASK QUESTION SECTION
+# 2. SCHEMA EXPLORER SECTION
+# ─────────────────────────────────────────────────────────────
+@schema_router.get("/schema")
+async def get_schema():
+    """Get database schema information (available columns, stats, sample data)."""
+    print(f"\n{'='*60}")
+    print("[SCHEMA] Schema request received")
+    print(f"{'='*60}")
+    
+    try:
+        schema = get_table_schema("uploaded_data")
+        
+        if not schema.get("columns"):
+            raise HTTPException(
+                status_code=404, 
+                detail="No data uploaded. Please upload a file first."
+            )
+        
+        sample_data = get_sample_data(limit=3)
+        column_stats = get_column_stats()
+        
+        print(f"[SCHEMA] Returning {len(schema['columns'])} columns")
+        
+        return {
+            "table_name": schema["table_name"],
+            "row_count": schema["row_count"],
+            "columns": schema["columns"],
+            "column_names": [col["name"] for col in schema["columns"]],
+            "sample_data": sample_data,
+            "column_stats": column_stats
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[SCHEMA] Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Schema fetch failed: {str(e)}")
+
+# ─────────────────────────────────────────────────────────────
+# 3. ASK QUESTION SECTION
 # ─────────────────────────────────────────────────────────────
 @ask_router.post("/ask", response_model=AskResponse)
 async def ask_question(request: AskRequest):
-    """
-    Ask a natural language question about your data.
-    
-    - **Input**: Natural language question
-    - **Output**: SQL query + results + confidence score
-    - **KPI Support**: Growth Rate, Retention, Churn, AOV, Running Total
-    """
+    """Ask a natural language question about your data."""
     print(f"\n{'='*60}")
     print(f"[ASK] Question received: {request.question}")
     print(f"{'='*60}")
     
     start_time = time.time()
+    
+    # CHECK CACHE FIRST
+    cache_key = hash(request.question)
+    current_time = time.time()
+    
+    if cache_key in QUERY_CACHE:
+        cached_result = QUERY_CACHE[cache_key]
+        if current_time - cached_result["timestamp"] < CACHE_TTL:
+            print(f"[CACHE] Hit! Returning cached result")
+            cached_result["cached"] = True
+            return AskResponse(**cached_result["data"])
+        else:
+            print(f"[CACHE] Expired. Removing from cache")
+            del QUERY_CACHE[cache_key]
     
     try:
         schema = get_table_schema("uploaded_data")
@@ -222,17 +264,28 @@ async def ask_question(request: AskRequest):
         print(f"[ROWS RETURNED] {execution_result['rows_returned']}")
         print(f"{'='*60}\n")
         
-        return AskResponse(
-            question=request.question,
-            kpi_detected=engine_result["kpi_info"]["kpi_type"],
-            sql_query=sql_query,
-            rationale=engine_result["rationale"],
-            confidence_score=engine_result["confidence_score"],
-            execution_time=round(execution_time, 3),
-            rows_returned=execution_result["rows_returned"],
-            data=cleaned_data,
-            status="success"
-        )
+        # STORE IN CACHE
+        response_data = {
+            "question": request.question,
+            "kpi_detected": engine_result["kpi_info"]["kpi_type"],
+            "sql_query": sql_query,
+            "rationale": engine_result["rationale"],
+            "confidence_score": engine_result["confidence_score"],
+            "execution_time": round(execution_time, 3),
+            "rows_returned": execution_result["rows_returned"],
+            "data": cleaned_data,
+            "status": "success",
+            "cached": False
+        }
+        
+        QUERY_CACHE[cache_key] = {
+            "data": response_data,
+            "timestamp": current_time
+        }
+        
+        print(f"[CACHE] Stored in cache (TTL: {CACHE_TTL}s)")
+        
+        return AskResponse(**response_data)
     
     except HTTPException:
         raise
@@ -241,7 +294,7 @@ async def ask_question(request: AskRequest):
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────
-# DOWNLOAD RESULTS SECTION
+# 4. DOWNLOAD RESULTS SECTION
 # ─────────────────────────────────────────────────────────────
 @download_router.get("/download/csv")
 async def download_csv():
@@ -252,7 +305,10 @@ async def download_csv():
     
     try:
         if not LAST_QUERY_RESULT["data"]:
-            raise HTTPException(status_code=404, detail="No query results available. Please run a query first.")
+            raise HTTPException(
+                status_code=404, 
+                detail="No query results available. Please run a query first."
+            )
         
         df = pd.DataFrame(LAST_QUERY_RESULT["data"])
         
@@ -292,7 +348,10 @@ async def download_excel():
     
     try:
         if not LAST_QUERY_RESULT["data"]:
-            raise HTTPException(status_code=404, detail="No query results available. Please run a query first.")
+            raise HTTPException(
+                status_code=404, 
+                detail="No query results available. Please run a query first."
+            )
         
         df = pd.DataFrame(LAST_QUERY_RESULT["data"])
         
@@ -321,30 +380,61 @@ async def download_excel():
     except Exception as e:
         print(f"[DOWNLOAD] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
-    
+
 # ─────────────────────────────────────────────────────────────
-# SYSTEM INFO SECTION
+# 5. CACHE MANAGEMENT SECTION
+# ─────────────────────────────────────────────────────────────
+@cache_router.get("/cache/stats")
+async def get_cache_stats():
+    """Get query cache statistics."""
+    current_time = time.time()
+    active_cache = {k: v for k, v in QUERY_CACHE.items() 
+                    if current_time - v["timestamp"] < CACHE_TTL}
+    
+    return {
+        "total_cached_queries": len(active_cache),
+        "cache_ttl_seconds": CACHE_TTL,
+        "max_cache_size": len(QUERY_CACHE)
+    }
+
+@cache_router.delete("/cache/clear")
+async def clear_cache():
+    """Clear all query cache."""
+    global QUERY_CACHE
+    QUERY_CACHE = {}
+    print("[CACHE] Cache cleared")
+    return {"message": "Cache cleared successfully", "cleared_count": 0}
+
+# ─────────────────────────────────────────────────────────────
+# 6. SYSTEM INFO SECTION
 # ─────────────────────────────────────────────────────────────
 @info_router.get("/")
 async def root():
-    """
-    System information and available endpoints.
-    """
+    """System information and available endpoints."""
     return {
         "message": "NLP → SQL Backend System",
         "version": "1.0.0",
         "docs": "/docs",
+        "workflow": [
+            "Step 1: POST /api/upload - Upload your CSV/Excel file",
+            "Step 2: GET /api/schema - View available columns",
+            "Step 3: POST /api/ask - Ask questions about your data",
+            "Step 4: GET /api/download/csv - Download results as CSV",
+            "Step 5: GET /api/download/excel - Download results as Excel"
+        ],
         "endpoints": [
             "POST /api/upload - Upload CSV/Excel file",
+            "GET /api/schema - Get database schema",
             "POST /api/ask - Ask natural language question",
             "GET /api/download/csv - Download results as CSV",
-            "GET /api/download/excel - Download results as Excel"
+            "GET /api/download/excel - Download results as Excel",
+            "GET /api/cache/stats - Get cache statistics",
+            "DELETE /api/cache/clear - Clear query cache",
+            "GET /health - Health check"
         ]
     }
 
 @info_router.get("/health")
 async def health_check():
-    """
-    Health check endpoint.
-    """
+    """Health check endpoint."""
     return {"status": "healthy", "timestamp": time.time()}

@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
-from api.router import upload_router, ask_router, download_router, info_router
+from api.router import upload_router, schema_router, ask_router, download_router, cache_router, info_router
 from database.db import init_database
 import logging
 import time
@@ -59,10 +59,12 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"status": "error", "message": "Internal server error", "detail": str(exc)}
     )
 
-# Include all routers with prefix
+# Include all routers with prefix (order matters for Swagger UI)
 app.include_router(upload_router, prefix="/api")
+app.include_router(schema_router, prefix="/api")
 app.include_router(ask_router, prefix="/api")
 app.include_router(download_router, prefix="/api")
+app.include_router(cache_router, prefix="/api")
 app.include_router(info_router, prefix="")
 
 if __name__ == "__main__":
