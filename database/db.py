@@ -14,7 +14,10 @@ ALLOWED_TABLES = {"uploaded_data"}
 def _validate_table_name(table_name: str) -> str:
     """Whitelist validation for table names."""
     if table_name not in ALLOWED_TABLES:
-        raise ValueError(f"Invalid table name: '{table_name}'. Allowed: {ALLOWED_TABLES}")
+        raise ValueError(
+            f"Invalid table name: '{table_name}'. "
+            f"Allowed: {ALLOWED_TABLES}"
+        )
     return table_name
 
 
@@ -49,16 +52,19 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
 
 def init_database() -> None:
     """
-    Initialize DB — create skeleton table if it does not exist.
-    Does NOT wipe existing data so uploads persist across restarts.
+    Initialize DB on every startup — always starts fresh.
+    Drops any existing uploaded data so each server start is clean.
+    Users must re-upload their file after restarting the server.
     """
     with get_db_connection() as conn:
+        # ── Always drop and recreate skeleton ────────────────────────
+        conn.execute("DROP TABLE IF EXISTS uploaded_data")
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS uploaded_data (
+            CREATE TABLE uploaded_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             )
         """)
-    print("[DATABASE] SQLite initialized successfully")
+    print("[DATABASE] SQLite initialized — fresh start (previous data cleared)")
 
 
 def store_dataframe(df, table_name: str = "uploaded_data") -> int:
@@ -69,7 +75,7 @@ def store_dataframe(df, table_name: str = "uploaded_data") -> int:
         conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         df.to_sql(table_name, conn, index=False, if_exists="replace")
         cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
-        count = cursor.fetchone()[0]
+        count  = cursor.fetchone()[0]
 
     print(f"[DATABASE] Stored {count} rows in '{table_name}'")
     return count
@@ -78,20 +84,20 @@ def store_dataframe(df, table_name: str = "uploaded_data") -> int:
 def get_table_schema(table_name: str = "uploaded_data") -> dict:
     """
     Return schema for the given table.
-    Returns empty columns list if table is skeleton (no real data uploaded).
+    Returns empty columns list if table is skeleton (no real data).
     """
     table_name = _validate_table_name(table_name)
 
     with get_db_connection() as conn:
-        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        cursor  = conn.execute(f"PRAGMA table_info({table_name})")
         columns = cursor.fetchall()
 
         # Table does not exist at all
         if not columns:
             return {
                 "table_name": table_name,
-                "columns": [],
-                "row_count": 0
+                "columns":    [],
+                "row_count":  0
             }
 
         col_list = [
@@ -107,19 +113,19 @@ def get_table_schema(table_name: str = "uploaded_data") -> dict:
 
         col_names = [c["name"] for c in col_list]
 
-        # ── Skeleton table — only auto id column, no real data ────────────
+        # ── Skeleton table — only id column, no real data ─────────────
         if _is_skeleton_table(col_names):
-            print("[DATABASE] Skeleton table detected — no real data uploaded")
+            print("[DATABASE] Skeleton table — no real data uploaded yet")
             return {
                 "table_name": table_name,
                 "columns":    [],
                 "row_count":  0
             }
 
-        # ── Real data exists — get row count ──────────────────────────────
+        # ── Real data — get row count ──────────────────────────────────
         row_count = 0
         try:
-            cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+            cursor    = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
             row_count = cursor.fetchone()[0]
         except Exception as e:
             print(f"[DATABASE] Row count failed: {e}")
@@ -149,13 +155,16 @@ def get_sample_data(
     table_name: str = "uploaded_data",
     limit: int = 5
 ) -> List[Dict]:
-    """Get sample rows from table. Returns empty list for skeleton table."""
+    """
+    Get sample rows from table.
+    Returns empty list for skeleton table.
+    """
     table_name = _validate_table_name(table_name)
-    limit = max(1, min(int(limit), 100))
+    limit      = max(1, min(int(limit), 100))
 
     with get_db_connection() as conn:
         # Check for skeleton table first
-        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        cursor       = conn.execute(f"PRAGMA table_info({table_name})")
         columns_info = cursor.fetchall()
         col_names    = [col[1] for col in columns_info]
 
@@ -193,25 +202,25 @@ def get_column_stats(table_name: str = "uploaded_data") -> Dict:
         stats = {}
         for col in col_names:
             if not _validate_column_name(col):
-                print(f"[DATABASE] Skipping unsafe column name: '{col}'")
+                print(f"[DATABASE] Skipping unsafe column: '{col}'")
                 continue
 
             try:
                 cursor = conn.execute(f"""
                     SELECT
-                        COUNT(*)                    AS total,
-                        COUNT(DISTINCT "{col}")     AS unique_count,
-                        COUNT(*) - COUNT("{col}")   AS null_count
+                        COUNT(*)                  AS total,
+                        COUNT(DISTINCT "{col}")   AS unique_count,
+                        COUNT(*) - COUNT("{col}") AS null_count
                     FROM {table_name}
                 """)
-                row = cursor.fetchone()
+                row        = cursor.fetchone()
                 stats[col] = {
                     "total":        row[0],
                     "unique_count": row[1],
                     "null_count":   row[2]
                 }
             except Exception as e:
-                print(f"[DATABASE] Stats failed for column '{col}': {e}")
+                print(f"[DATABASE] Stats failed for '{col}': {e}")
                 stats[col] = {
                     "total":        0,
                     "unique_count": 0,
