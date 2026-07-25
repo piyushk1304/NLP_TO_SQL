@@ -11,6 +11,7 @@
 ![Local LLM](https://img.shields.io/badge/LLM-Local%20Only-10b981?style=for-the-badge)
 
 ---
+An open-source, fully local AI-powered data analyst that converts natural language questions into SQL queries, executes them against your uploaded data, and visualizes the results — with zero cloud dependency.
 
 ## What It Does
 
