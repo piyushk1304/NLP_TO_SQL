@@ -28,17 +28,3 @@ The system automatically:
 4. Renders charts, tables, and an explanation
 
 ---
-┌─────────────────────────────────────────────────────────┐
-│ Sidebar │ Chat Area │
-│ ───────────────── │ ─────────────────────────────── │
-│ Schema Explorer │ [User] What is sales growth? │
-│ • order_date TEXT │ │
-│ • sales REAL │ [AI] ───────────────────────── │
-│ • customer TEXT │ KPI: growth_rate | 87% conf │
-│ • region TEXT │ ───────────────────────────── │
-│ │ ▶ Generated SQL │
-│ Try asking: │ 📊 Area Chart (auto) │
-│ › Sales growth │ 📋 Data Table (sortable) │
-│ › Top customers │ 💬 Rationale │
-│ › By region │ │
-└─────────────────────────────────────────────────────────┘
