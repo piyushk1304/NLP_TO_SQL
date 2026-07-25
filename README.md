@@ -28,3 +28,31 @@ The system automatically:
 4. Renders charts, tables, and an explanation
 
 ---
+
+---
+
+## Tech Stack
+
+### Backend
+| Component     | Technology                    |
+|---------------|-------------------------------|
+| API Framework | FastAPI                       |
+| Database      | SQLite (WAL mode)             |
+| LLM           | llama.cpp local HTTP server   |
+| Data Layer    | Pandas + SQLAlchemy           |
+| Caching       | Thread-safe TTL + LRU cache   |
+| Validation    | Pydantic v2                   |
+
+### Frontend
+| Component     | Technology                    |
+|---------------|-------------------------------|
+| Framework     | React 18                      |
+| Charts        | Recharts                      |
+| HTTP Client   | Axios                         |
+| Styling       | Pure CSS (design tokens)      |
+| File Upload   | react-dropzone                |
+| Notifications | react-hot-toast               |
+| SQL Highlight | react-syntax-highlighter      |
+| Chart Export  | html2canvas                   |
+
+---
