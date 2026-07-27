@@ -30,8 +30,6 @@ The system automatically:
 
 ---
 
----
-
 ## Tech Stack
 
 ### Backend
